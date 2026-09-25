@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { db } from './firebase';
+import { db, auth } from './firebase';
 import {
   collection,
   doc,
@@ -11,6 +11,7 @@ import {
   writeBatch,
   runTransaction,
 } from 'firebase/firestore';
+import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -26,7 +27,6 @@ const MIN_ACTIVE_HOLDINGS = 2;
 const MIN_BUY_PERCENT = 10;
 const MAX_BUY_PERCENT = 35;
 const SESSION_KEY = 'silverballSession'; // { playerId, pin } — this device only
-const ORGANIZER_SESSION_KEY = 'silverballOrganizerPin'; // this device only
 
 const uid = () =>
   (crypto && crypto.randomUUID) ? crypto.randomUUID() : `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -70,7 +70,7 @@ async function seedIfNeeded() {
       startingCash: 2500,
       completed: false,
       marketEventMessage: null,
-      organizerPin: null,
+      organizerEmail: null,
     });
     return true;
   });
@@ -111,8 +111,9 @@ export default function App() {
   const [myPlayerId, setMyPlayerId] = useState(null);
   const [sessionChecked, setSessionChecked] = useState(false);
 
-  // ---- Organizer gate (this device) ----
-  const [organizerUnlocked, setOrganizerUnlocked] = useState(false);
+  // ---- Organizer gate: real Google sign-in, tied to one specific account ----
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
 
   // ---- Staged picks for resolving a machine, before "Confirm Results" ----
   const [pendingPlacements, setPendingPlacements] = useState({});
@@ -136,11 +137,16 @@ export default function App() {
       });
       setRounds(map);
     });
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setAuthChecked(true);
+    });
 
     return () => {
       unsubConfig();
       unsubPlayers();
       unsubRounds();
+      unsubAuth();
     };
   }, []);
 
@@ -174,23 +180,7 @@ export default function App() {
     setSessionChecked(true);
   }, [players]);
 
-  // Restore this device's organizer unlock, revalidating against the live
-  // organizer PIN (if the organizer changes it, this device re-locks).
-  useEffect(() => {
-    if (!config) return;
-    if (!config.organizerPin) {
-      setOrganizerUnlocked(true); // no PIN set yet = open
-      return;
-    }
-    try {
-      const saved = localStorage.getItem(ORGANIZER_SESSION_KEY);
-      setOrganizerUnlocked(saved === config.organizerPin);
-    } catch (e) {
-      setOrganizerUnlocked(false);
-    }
-  }, [config]);
-
-  if (loading || !config || !sessionChecked) {
+  if (loading || !config || !sessionChecked || !authChecked) {
     return (
       <div className="min-h-screen bg-slate-900 text-slate-100 flex items-center justify-center">
         <p className="text-slate-400">Loading The Silverball Exchange…</p>
@@ -225,6 +215,10 @@ export default function App() {
   const getBidReserve = (round) => (round.isLastRound ? 10 : 20);
 
   const assignedPlayerIdsThisRound = new Set(currentRoundData.machines.flatMap((m) => m.assignedPlayerIds));
+
+  // Organizer access is locked to one specific Google account (config.organizerEmail).
+  // Until someone claims it, anyone signed in can claim it once.
+  const isOrganizer = !!(currentUser && config.organizerEmail && currentUser.email === config.organizerEmail);
 
   // -------------------------------------------------------------------------
   // Login / claim actions
@@ -268,27 +262,34 @@ export default function App() {
   };
 
   // -------------------------------------------------------------------------
-  // Organizer gate actions
+  // Organizer gate actions — tied to a real Google account, not a shared PIN
   // -------------------------------------------------------------------------
 
-  const setOrganizerPin = async (pin) => {
-    await updateDoc(doc(db, 'config', 'state'), { organizerPin: pin || null });
+  const signInWithGoogle = async () => {
     try {
-      if (pin) localStorage.setItem(ORGANIZER_SESSION_KEY, pin);
-      else localStorage.removeItem(ORGANIZER_SESSION_KEY);
-    } catch (e) {}
-    setOrganizerUnlocked(true);
+      await signInWithPopup(auth, new GoogleAuthProvider());
+    } catch (e) {
+      alert(e.message || 'Google sign-in failed.');
+    }
   };
 
-  const unlockOrganizer = (pin) => {
-    if (pin === config.organizerPin) {
-      try {
-        localStorage.setItem(ORGANIZER_SESSION_KEY, pin);
-      } catch (e) {}
-      setOrganizerUnlocked(true);
-    } else {
-      alert('Wrong organizer PIN.');
-    }
+  const signOutOfGoogle = async () => {
+    try {
+      await signOut(auth);
+    } catch (e) {}
+  };
+
+  // First person to sign in and claim it locks the console to their account.
+  const claimOrganizerAccount = async () => {
+    if (!currentUser) return;
+    await updateDoc(doc(db, 'config', 'state'), { organizerEmail: currentUser.email });
+  };
+
+  // Lets the current organizer release the lock (e.g. to hand off to someone
+  // else, or to re-lock it to a different account).
+  const releaseOrganizerAccount = async () => {
+    if (!window.confirm('Release organizer access? Anyone who signs in with Google will be able to claim it next.')) return;
+    await updateDoc(doc(db, 'config', 'state'), { organizerEmail: null });
   };
 
   // -------------------------------------------------------------------------
@@ -743,7 +744,7 @@ export default function App() {
       startingCash: 2500,
       completed: false,
       marketEventMessage: null,
-      organizerPin: config.organizerPin, // keep the organizer PIN across resets
+      organizerEmail: config.organizerEmail, // keep the organizer account locked across resets
     });
     await batch.commit();
     try {
@@ -863,7 +864,7 @@ export default function App() {
         ))}
 
       {activeTab === 'organizer' &&
-        (organizerUnlocked ? (
+        (isOrganizer ? (
           <OrganizerConsole
             config={config}
             players={players}
@@ -897,13 +898,21 @@ export default function App() {
             resetTournament={resetTournament}
             exportLeaderboardCSV={exportLeaderboardCSV}
             exportFullDataJSON={exportFullDataJSON}
-            setOrganizerPin={setOrganizerPin}
+            currentUser={currentUser}
+            releaseOrganizerAccount={releaseOrganizerAccount}
+            signOutOfGoogle={signOutOfGoogle}
             updatePlayerCash={updatePlayerCash}
             updateStock={updateStock}
             deleteStock={deleteStock}
           />
         ) : (
-          <OrganizerGate hasPin={!!config.organizerPin} unlockOrganizer={unlockOrganizer} setOrganizerPin={setOrganizerPin} />
+          <OrganizerGate
+            currentUser={currentUser}
+            organizerEmail={config.organizerEmail}
+            signInWithGoogle={signInWithGoogle}
+            signOutOfGoogle={signOutOfGoogle}
+            claimOrganizerAccount={claimOrganizerAccount}
+          />
         ))}
     </div>
   );
@@ -1028,48 +1037,54 @@ function LoginScreen({ players, claimPlayer, loginAsPlayer }) {
 // Organizer PIN gate
 // ---------------------------------------------------------------------------
 
-function OrganizerGate({ hasPin, unlockOrganizer, setOrganizerPin }) {
-  const [pin, setPin] = useState('');
-
+function OrganizerGate({ currentUser, organizerEmail, signInWithGoogle, signOutOfGoogle, claimOrganizerAccount }) {
   return (
     <div className="max-w-sm mx-auto space-y-3 bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-2xl text-center">
       <h2 className="text-lg font-bold text-amber-400">⚙️ Organizer Access</h2>
-      {hasPin ? (
+
+      {!currentUser ? (
         <>
-          <p className="text-xs text-slate-400">Enter the organizer PIN to unlock this device.</p>
-          <input
-            type="password"
-            inputMode="numeric"
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm text-center"
-          />
+          <p className="text-xs text-slate-400">
+            {organizerEmail
+              ? `This console is locked to ${organizerEmail}. Sign in with that Google account to continue.`
+              : 'Sign in with Google to set up (or claim) organizer access for this tournament.'}
+          </p>
           <button
-            onClick={() => unlockOrganizer(pin)}
+            onClick={signInWithGoogle}
             className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2 rounded"
           >
-            Unlock
+            Sign in with Google
+          </button>
+        </>
+      ) : organizerEmail ? (
+        <>
+          <p className="text-xs text-slate-400">
+            This console is locked to <span className="text-slate-200 font-semibold">{organizerEmail}</span>. You're
+            signed in as <span className="text-slate-200 font-semibold">{currentUser.email}</span>, which doesn't
+            match.
+          </p>
+          <button
+            onClick={signOutOfGoogle}
+            className="w-full bg-slate-700 hover:bg-slate-600 text-slate-100 font-bold py-2 rounded"
+          >
+            Sign out &amp; try a different account
           </button>
         </>
       ) : (
         <>
-          <p className="text-xs text-slate-400">No organizer PIN is set yet. Set one to protect this console, or skip.</p>
-          <input
-            type="password"
-            inputMode="numeric"
-            placeholder="Set a PIN (4+ digits)"
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm text-center"
-          />
+          <p className="text-xs text-slate-400">
+            No one has claimed organizer access yet. You're signed in as{' '}
+            <span className="text-slate-200 font-semibold">{currentUser.email}</span> — claim it to lock this
+            console to your account.
+          </p>
           <button
-            onClick={() => setOrganizerPin(pin)}
+            onClick={claimOrganizerAccount}
             className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2 rounded"
           >
-            Set PIN &amp; Unlock
+            Claim Organizer Access
           </button>
-          <button onClick={() => setOrganizerPin(null)} className="w-full text-xs text-slate-500 underline">
-            Skip for now (leave Organizer open)
+          <button onClick={signOutOfGoogle} className="w-full text-xs text-slate-500 underline">
+            Not you? Sign out and use a different account
           </button>
         </>
       )}
@@ -1353,7 +1368,9 @@ function OrganizerConsole(props) {
     resetTournament,
     exportLeaderboardCSV,
     exportFullDataJSON,
-    setOrganizerPin,
+    currentUser,
+    releaseOrganizerAccount,
+    signOutOfGoogle,
     updatePlayerCash,
     updateStock,
     deleteStock,
@@ -1365,7 +1382,6 @@ function OrganizerConsole(props) {
   const [newMachineGroupSize, setNewMachineGroupSize] = useState(4);
   const [selectedAdjustMachineIds, setSelectedAdjustMachineIds] = useState([]);
   const [adjustPercent, setAdjustPercent] = useState('');
-  const [newOrgPin, setNewOrgPin] = useState('');
   const [correctPlayerId, setCorrectPlayerId] = useState('');
   const [correctCashInput, setCorrectCashInput] = useState('');
   const [stockEdits, setStockEdits] = useState({}); // stockId -> { percentage, cost, value, status }
@@ -1448,20 +1464,24 @@ function OrganizerConsole(props) {
 
       <div className="flex justify-between items-center bg-slate-900 p-4 rounded-xl border border-slate-700">
         <div>
-          <span className="font-bold block">Organizer PIN</span>
-          <span className="text-xs text-slate-400">{config.organizerPin ? 'A PIN is set for this console.' : 'No PIN set — open to anyone with the link.'}</span>
+          <span className="font-bold block">Organizer Account</span>
+          <span className="text-xs text-slate-400">
+            Locked to <span className="text-slate-200 font-semibold">{config.organizerEmail}</span> — signed in as{' '}
+            {currentUser?.email}.
+          </span>
         </div>
         <div className="flex gap-2">
-          <input
-            type="password"
-            inputMode="numeric"
-            placeholder="New PIN"
-            value={newOrgPin}
-            onChange={(e) => setNewOrgPin(e.target.value)}
-            className="w-24 bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-sm"
-          />
-          <button onClick={() => setOrganizerPin(newOrgPin)} className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs px-3 py-1.5 rounded transition">
-            Set
+          <button
+            onClick={signOutOfGoogle}
+            className="bg-slate-700 hover:bg-slate-600 text-slate-100 font-bold text-xs px-3 py-1.5 rounded transition"
+          >
+            Sign Out
+          </button>
+          <button
+            onClick={releaseOrganizerAccount}
+            className="bg-red-600 hover:bg-red-500 text-white font-bold text-xs px-3 py-1.5 rounded transition"
+          >
+            Release Access
           </button>
         </div>
       </div>
