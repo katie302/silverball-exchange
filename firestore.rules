@@ -1,0 +1,16 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Open read/write so every player's device can sync live without
+    // needing individual Firebase Auth accounts (this app uses its own
+    // simple name+PIN claim system instead). This is fine for a private,
+    // invite-only tournament link, but anyone who has this site's Firebase
+    // config (visible in the deployed JS bundle, which is normal for
+    // client-side Firebase apps) could technically read or write this
+    // database directly. Don't store anything truly sensitive in it, and
+    // don't publicize the deployed URL beyond your players.
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
