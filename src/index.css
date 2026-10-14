@@ -2,13 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-html,
-body,
-#root {
-  height: 100%;
-}
-
-body {
-  margin: 0;
-  background: #0f172a;
-}
+html, body, #root { min-height: 100%; }
+body { background: #14101F; color: #F5F0FF; font-family: 'Hanken Grotesk', system-ui, sans-serif; -webkit-tap-highlight-color: transparent; }
+input, select, textarea { color-scheme: dark; }
