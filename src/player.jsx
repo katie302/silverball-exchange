@@ -401,6 +401,34 @@ function Portfolio({ me }) {
 }
 
 // ---------- board ----------
+// Every group's machine and players, for everyone to see.
+function Matches({ me }) {
+  const { state } = useGame();
+  const r = currentRound(state);
+  if (!r) return <Card className="text-sm text-muted">Machines are assigned when the round starts.</Card>;
+  const mineId = groupOf(state, me.pid)?.id;
+  return (
+    <div className="space-y-3">
+      <div className="font-mono text-[11px] uppercase text-dim">Round {r.n} of {state.settings.rounds}</div>
+      {r.groups.map((g) => (
+        <Card key={g.id} className={g.id === mineId ? 'border-pink' : ''}>
+          <div className="flex items-center justify-between">
+            <div className="font-display text-xl font-extrabold">{state.machines[g.machineId]?.name}</div>
+            {g.id === mineId && <Chip tone="pink">your match</Chip>}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {g.playerIds.map((id) => (
+              <span key={id} className={cx('rounded-full border px-3 py-1 text-sm', id === me.pid ? 'border-pink text-ivory' : 'border-line text-muted')}>
+                {state.players[id].name}
+              </span>
+            ))}
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
 function Board({ me }) {
   const { state } = useGame();
   const lb = leaderboard(state);
@@ -439,7 +467,7 @@ export default function PlayerApp() {
     localStorage.removeItem(SESSION_KEY);
     setMe(null);
   };
-  const tabs = [['market', 'Market'], ['portfolio', 'Portfolio'], ['board', 'Board']];
+  const tabs = [['market', 'Market'], ['matches', 'Matches'], ['portfolio', 'Portfolio'], ['board', 'Board']];
   return (
     <div className="mx-auto min-h-screen max-w-md px-4 pb-24 pt-5">
       <div className="mb-4 flex items-center justify-between">
@@ -448,6 +476,7 @@ export default function PlayerApp() {
       </div>
       {tab === 'market' && <Market me={me} />}
       {tab === 'portfolio' && <Portfolio me={me} />}
+      {tab === 'matches' && <Matches me={me} />}
       {tab === 'board' && <Board me={me} />}
       <nav className="fixed bottom-0 left-0 right-0 border-t border-line bg-ink">
         <div className="mx-auto flex max-w-md">
