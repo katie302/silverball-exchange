@@ -18,6 +18,13 @@ export const DEFAULT_SETTINGS = {
   payout2: [30, -30],
   finalRoundMult: 1.5,
   selfBuySeconds: 300,
+  openSeconds: 300, // how long the market stays open after the self-buy window (0 = no timer)
+  // Game style: 'stocks' (buy % of a player's stock) or 'horse' (pooled bets).
+  style: 'stocks',
+  minBet: 10, // horse style: smallest bet in dollars
+  houseBonusFinalPct: 50, // horse style: house adds this % to every pool in the final round
+  showOdds: true, // show rating-based odds to everyone
+  useIfpa: true, // let IFPA / Matchplay ratings seed the starting rating
   // Market event sizes, in percentage points.
   eventSizes: { machine: 10, upset: 15, winnerTakesAll: 10, market: 5, hotHand: 8 },
 };

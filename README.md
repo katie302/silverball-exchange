@@ -29,3 +29,19 @@ The whole game is one Firestore document, `silverball/v2`. Every action runs thr
 ## Organizer flow
 
 Roster + Machines > Round (Start) > self-buy window > Open market > Lock round > Results (approve reports) > Continue > market event (Re-roll / Apply / Skip) > Start next round. Mistakes: Uh oh tab.
+
+## What's new in this version
+- Two game styles, chosen at setup (locked once round 1 starts): **stocks** and **horse betting**.
+- Stocks: finished stocks auto-cash at payout, no cap on shares (price keeps rising), a market-open timer plus an "I'm done buying" button.
+- Horse: Win / Place / Show pools per group, no self-bet or cash reserve required, final-round house bonus.
+- Add or remove players any time before Lock (removed = "withdrawn", shown last), restart a round until Lock.
+- Live "who owns / who bet what" on every stock, kept after lock and payout.
+- Odds from one blended rating (IFPA rating + saved history + this tournament). Players can switch between "3-to-1" and "25%".
+- Saved players (profiles) that can be made inactive without losing their stats.
+
+## Optional: IFPA rating lookup
+`api/ratings.js` is a Vercel function. Add an environment variable `MATCHPLAY_TOKEN` in Vercel and redeploy to enable
+"Look up IFPA ratings" on the Roster tab. Without it, type ratings in by hand.
+
+## Tests
+`node --test tests/engine.test.mjs`

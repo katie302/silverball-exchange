@@ -12,9 +12,12 @@ import {
   roundPhase,
   checkBuy,
   checkSell,
-  computeFix,
-  heldPositions,
+  rosterChanged,
+  allBoughtIn,
+  marketClosed,
 } from './selectors.js';
+import { computeFix } from './fix.js';
+import { checkBet, payoutHorse } from './horse.js';
 
 export function initialState() {
   return {
@@ -30,6 +33,7 @@ export function initialState() {
     rounds: [],
     stocks: {},
     positions: {},
+    bets: {},
     pairCounts: {},
     pairLast: {},
     log: [],
@@ -61,7 +65,20 @@ function requirePhase(s, now, ...phases) {
   return ph;
 }
 
-function startRound(s, now) {
+function rebuildPairs(s) {
+  s.pairCounts = {};
+  s.pairLast = {};
+  for (const r of s.rounds)
+    for (const g of r.groups)
+      for (let a = 0; a < g.playerIds.length; a++)
+        for (let b = a + 1; b < g.playerIds.length; b++) {
+          const k = pairKey(g.playerIds[a], g.playerIds[b]);
+          s.pairCounts[k] = (s.pairCounts[k] || 0) + 1;
+          s.pairLast[k] = r.n;
+        }
+}
+
+function startRound(s, now, restarts = 0) {
   const n = s.round + 1;
   const active = activePlayers(s);
   if (active.length < 2) throw new Error('Need at least 2 players left');
@@ -81,7 +98,9 @@ function startRound(s, now) {
     selfEndsAt: s.settings.selfBuySeconds > 0 ? now + s.settings.selfBuySeconds * 1000 : now,
     groups: [],
     stockByPlayer: {},
+    done: {},
     event: null,
+    restarts,
   };
   groupsIds.forEach((ids, i) => {
     const g = { id: `r${n}g${i + 1}`, machineId: order[i], playerIds: ids, places: null, reports: [], paid: false };
@@ -115,7 +134,7 @@ function startRound(s, now) {
   log(s, now, `Round ${n} started: ${round.groups.length} groups`);
 }
 
-function payoutRound(s, now, event) {
+function payoutStocks(s, event) {
   const r = currentRound(s);
   const mult = isFinalRound(s) ? s.settings.finalRoundMult : 1;
   for (const g of r.groups) {
@@ -134,15 +153,31 @@ function payoutRound(s, now, event) {
       stock.mult = mult;
       const f = factorFor(s.settings, size, place, mult, delta);
       for (const pos of Object.values(s.positions)) {
-        if (pos.stockId === stock.id && pos.status === 'held') pos.value = Math.round(pos.cost * f);
+        if (pos.stockId === stock.id && pos.status === 'held') {
+          // Finished stocks are cashed out automatically.
+          pos.value = Math.round(pos.cost * f);
+          s.players[pos.holderId].cash += pos.value;
+          pos.status = 'sold';
+          pos.soldValue = pos.value;
+          pos.soldAfter = true;
+        }
       }
     }
     g.paid = true;
   }
+}
+
+function payoutRound(s, now, event) {
+  const r = currentRound(s);
+  for (const g of r.groups) {
+    if (!g.places) throw new Error('Every group needs a result first');
+  }
+  if (s.settings.style === 'horse') payoutHorse(s);
+  else payoutStocks(s, event);
   r.event = event ? { ...event, status: event.status === 'skipped' ? 'skipped' : 'applied' } : r.event;
   r.phase = 'paid';
   if (!isFinalRound(s)) {
-    const floor = minSelfCost(s.settings);
+    const floor = s.settings.style === 'horse' ? s.settings.minBet : minSelfCost(s.settings);
     for (const pid of activePlayers(s)) {
       if (netWorth(s, pid) < floor) {
         s.players[pid].eliminated = true;
@@ -155,6 +190,8 @@ function payoutRound(s, now, event) {
 
 export function reduce(prev, a) {
   const s = structuredClone(prev);
+  s.bets = s.bets || {};
+  s.settings = { ...DEFAULT_SETTINGS, ...s.settings }; // older saved games get the new defaults
   const now = a.now || 0;
   const st = s.settings;
   switch (a.type) {
@@ -168,12 +205,22 @@ export function reduce(prev, a) {
     case 'addPlayers': {
       requireOrg(s, a);
       const have = new Set(s.playerOrder.map((id) => s.players[id].name.toLowerCase()));
+      // Late joiners start with the lower of the normal starting cash and the
+      // current average net worth of the players still in.
+      let joinCash = st.startingCash;
+      if (s.status === 'active') {
+        const act = activePlayers(s);
+        if (act.length) joinCash = Math.min(st.startingCash, Math.round(act.reduce((t, id) => t + netWorth(s, id), 0) / act.length));
+      }
       for (const raw of a.names || []) {
         const name = String(raw).trim();
         if (!name || have.has(name.toLowerCase())) continue;
         have.add(name.toLowerCase());
         const id = nid(s, 'p');
-        s.players[id] = { id, name, pinHash: null, claimed: false, cash: st.startingCash, eliminated: false };
+        s.players[id] = {
+          id, name, pinHash: null, claimed: false, cash: joinCash, eliminated: false, withdrawn: false,
+          ifpaId: null, ifpaRating: null, histRating: null, histGames: 0,
+        };
         s.playerOrder.push(id);
       }
       break;
@@ -198,9 +245,32 @@ export function reduce(prev, a) {
     }
     case 'removePlayer': {
       requireOrg(s, a);
-      if (s.status !== 'setup') throw new Error('Players can only be removed before the start');
-      delete s.players[a.pid];
-      s.playerOrder = s.playerOrder.filter((id) => id !== a.pid);
+      const p = s.players[a.pid];
+      if (!p) throw new Error('Unknown player');
+      if (s.status === 'setup') {
+        delete s.players[a.pid];
+        s.playerOrder = s.playerOrder.filter((id) => id !== a.pid);
+        break;
+      }
+      if (s.status === 'active') {
+        const ph = roundPhase(s, now);
+        if (ph === 'locked' || ph === 'event')
+          throw new Error('Matches are in progress. Remove them once the results are in.');
+      }
+      p.withdrawn = true;
+      log(s, now, `${p.name} removed`);
+      break;
+    }
+    case 'restorePlayer': {
+      requireOrg(s, a);
+      const p = s.players[a.pid];
+      if (!p) throw new Error('Unknown player');
+      if (s.status === 'active') {
+        const ph = roundPhase(s, now);
+        if (ph === 'locked' || ph === 'event') throw new Error('Matches are in progress. Add them back once the results are in.');
+      }
+      p.withdrawn = false;
+      log(s, now, `${p.name} added back`);
       break;
     }
     case 'claimPlayer': {
@@ -210,6 +280,39 @@ export function reduce(prev, a) {
       if (!a.pinHash) throw new Error('Pick a PIN');
       p.claimed = true;
       p.pinHash = a.pinHash;
+      if (a.ifpaId) p.ifpaId = String(a.ifpaId).replace(/\D/g, '') || null;
+      break;
+    }
+    case 'setIfpa': {
+      // A player (with their PIN) or the organizer sets an IFPA number; only the organizer sets a rating.
+      const p = s.players[a.pid];
+      if (!p) throw new Error('Unknown player');
+      const isOrg = s.organizerEmail && a.actor && String(a.actor).toLowerCase() === s.organizerEmail.toLowerCase();
+      if (!isOrg) requirePlayer(s, a);
+      const before = p.ifpaId;
+      p.ifpaId = String(a.ifpaId || '').replace(/\D/g, '') || null;
+      if (p.ifpaId !== before) p.ifpaRating = null; // a different number invalidates the old rating
+      if (isOrg && a.ifpaRating !== undefined) {
+        const n = Number(a.ifpaRating);
+        p.ifpaRating = a.ifpaRating === null || a.ifpaRating === '' || isNaN(n) ? null : n;
+      }
+      break;
+    }
+    case 'setRatings': {
+      requireOrg(s, a);
+      for (const [pid, r] of Object.entries(a.ratings || {})) {
+        if (s.players[pid] && typeof r === 'number' && isFinite(r)) s.players[pid].ifpaRating = r;
+      }
+      break;
+    }
+    case 'seedRatings': {
+      requireOrg(s, a);
+      if (s.status !== 'setup') throw new Error('History can only be loaded before round 1');
+      for (const [pid, r] of Object.entries(a.ratings || {})) {
+        if (!s.players[pid]) continue;
+        s.players[pid].histRating = r.rating;
+        s.players[pid].histGames = r.games || 0;
+      }
       break;
     }
     case 'updateSettings': {
@@ -220,6 +323,7 @@ export function reduce(prev, a) {
       if (!Number.isInteger(next.rounds) || next.rounds < 1) throw new Error('Rounds must be 1 or more');
       if (!Number.isInteger(next.minSelfBuyPct) || next.minSelfBuyPct < 1 || next.minSelfBuyPct > 100)
         throw new Error('Min self-buy must be 1-100%');
+      if (next.openSeconds != null && (!Number.isInteger(next.openSeconds) || next.openSeconds < 0)) throw new Error('Market timer must be 0 or more seconds');
       for (const k of ['maxPctPerStock', 'maxSelfBuyPct'])
         if (next[k] != null && (!Number.isInteger(next[k]) || next[k] < 1)) throw new Error('Limits must be whole numbers');
       let last = 0;
@@ -230,6 +334,12 @@ export function reduce(prev, a) {
       if (last !== 100) throw new Error('The last price tier must end at 100%');
       for (const k of ['payout4', 'payout3', 'payout2']) if (!next[k].every(num)) throw new Error('Payouts are invalid');
       if (!num(next.finalRoundMult) || next.finalRoundMult <= 0) throw new Error('Final multiplier is invalid');
+      if (!['stocks', 'horse'].includes(next.style)) throw new Error('Unknown game style');
+      if (next.style !== st.style && s.status !== 'setup') throw new Error('The game style can only be changed before round 1');
+      if (!Number.isInteger(next.minBet) || next.minBet < 1) throw new Error('Minimum bet must be a whole number');
+      if (!num(next.houseBonusFinalPct) || next.houseBonusFinalPct < 0) throw new Error('House bonus is invalid');
+      next.showOdds = !!next.showOdds;
+      next.useIfpa = !!next.useIfpa;
       s.settings = next;
       if (s.status === 'setup') for (const p of Object.values(s.players)) p.cash = next.startingCash;
       break;
@@ -271,22 +381,59 @@ export function reduce(prev, a) {
       startRound(s, now);
       break;
     }
+    case 'doneBuying': {
+      requirePlayer(s, a);
+      if (st.style === 'horse') throw new Error('Not used with bets');
+      const r = currentRound(s);
+      if (!r || r.stockByPlayer[a.pid] == null) throw new Error("You're not in this round");
+      if (roundPhase(s, now) !== 'open') throw new Error('The market is not open');
+      if (marketClosed(s, now)) throw new Error('The market is already closed');
+      r.done = r.done || {};
+      if (a.undo) delete r.done[a.pid]; else r.done[a.pid] = true;
+      break;
+    }
     case 'openTrading': {
       requireOrg(s, a);
       requireActive(s);
       const r = currentRound(s);
       if (r.phase !== 'self') throw new Error('Already open');
       r.phase = 'open';
+      r.selfEndsAt = Math.min(r.selfEndsAt ?? now, now); // the open-market timer starts now
       break;
     }
     case 'lockRound': {
       requireOrg(s, a);
       requireActive(s);
       requirePhase(s, now, 'self', 'open');
+      if (rosterChanged(s)) throw new Error('The roster changed. Restart the round first so everyone gets a group.');
       const r = currentRound(s);
       r.phase = 'locked';
       for (const id of Object.values(r.stockByPlayer)) s.stocks[id].status = 'locked';
       log(s, now, `Round ${r.n} locked`);
+      break;
+    }
+    case 'restartRound': {
+      requireOrg(s, a);
+      requireActive(s);
+      requirePhase(s, now, 'self', 'open');
+      const r = currentRound(s);
+      // Refund this round's buy-ins, then redraw groups and machines.
+      for (const pos of Object.values(s.positions)) {
+        if (s.stocks[pos.stockId].round !== r.n) continue;
+        if (pos.status === 'held') s.players[pos.holderId].cash += pos.cost;
+        delete s.positions[pos.id];
+      }
+      for (const b of Object.values(s.bets)) {
+        if (b.round !== r.n) continue;
+        if (b.status === 'open') s.players[b.bettorId].cash += b.amount;
+        delete s.bets[b.id];
+      }
+      for (const id of Object.values(r.stockByPlayer)) delete s.stocks[id];
+      s.rounds.pop();
+      s.round -= 1;
+      rebuildPairs(s);
+      startRound(s, now, (r.restarts || 0) + 1);
+      log(s, now, `Round ${r.n} restarted`);
       break;
     }
     case 'swapMachine': {
@@ -358,7 +505,7 @@ export function reduce(prev, a) {
       requirePhase(s, now, 'locked');
       const r = currentRound(s);
       if (!r.groups.every((g) => g.places)) throw new Error('Every group needs a result first');
-      if (isFinalRound(s)) payoutRound(s, now, null);
+      if (isFinalRound(s) || st.style === 'horse') payoutRound(s, now, null);
       else {
         r.event = drawEvent(s);
         r.phase = 'event';
@@ -422,15 +569,16 @@ export function reduce(prev, a) {
         stock.mod = payoutFor(st, size)[stock.place - 1] ?? 0;
       }
       for (const c of changes) {
-        const pos = s.positions[c.positionId];
-        if (pos.status === 'held') pos.value = c.newValue;
-        else if (a.policy === 'adjust') {
-          s.players[pos.holderId].cash += c.delta;
+        s.players[c.holderId].cash += c.delta;
+        if (st.style === 'horse') s.bets[c.positionId].payout = c.newValue;
+        else {
+          const pos = s.positions[c.positionId];
           pos.soldValue = c.newValue;
+          pos.value = c.newValue;
         }
       }
       g.places = ord.slice();
-      log(s, now, `Result corrected for round ${a.round} ${g.id} (${a.policy === 'adjust' ? 'adjusted sold cash' : 'left sold cash'})`);
+      log(s, now, `Result corrected for round ${a.round} ${g.id}; cash adjusted`);
       break;
     }
     case 'adjustCash': {
@@ -460,11 +608,17 @@ export function reduce(prev, a) {
     }
     case 'buy': {
       requirePlayer(s, a);
+      if (st.style === 'horse') throw new Error('This tournament uses bets, not stocks');
       const chk = checkBuy(s, a.pid, a.stockId, a.pct, now);
       if (!chk.ok) throw new Error(chk.error);
       const stock = s.stocks[a.stockId];
       s.players[a.pid].cash -= chk.cost;
       stock.soldPct += a.pct;
+      {
+        // Everyone is bought in: the self-buy window ends now, so the open-market timer starts now.
+        const rr = currentRound(s);
+        if (rr.phase === 'self' && allBoughtIn(s)) rr.selfEndsAt = Math.min(rr.selfEndsAt ?? now, now);
+      }
       let pos = Object.values(s.positions).find(
         (p) => p.holderId === a.pid && p.stockId === a.stockId && p.status === 'held'
       );
@@ -488,8 +642,28 @@ export function reduce(prev, a) {
       }
       break;
     }
+    case 'bet': {
+      requirePlayer(s, a);
+      const chk = checkBet(s, a.pid, a.stockId, a.kind, a.amount, now);
+      if (!chk.ok) throw new Error(chk.error);
+      const stock = s.stocks[a.stockId];
+      s.players[a.pid].cash -= a.amount;
+      const open = Object.values(s.bets).find(
+        (b) => b.bettorId === a.pid && b.stockId === a.stockId && b.kind === a.kind && b.status === 'open'
+      );
+      if (open) open.amount += a.amount;
+      else {
+        const id = nid(s, 'bet');
+        s.bets[id] = {
+          id, bettorId: a.pid, stockId: a.stockId, groupId: stock.groupId, round: stock.round,
+          kind: a.kind, amount: a.amount, status: 'open', payout: 0, at: now,
+        };
+      }
+      break;
+    }
     case 'sell': {
       requirePlayer(s, a);
+      if (st.style === 'horse') throw new Error('Bets are final');
       const chk = checkSell(s, a.pid, a.positionId, now);
       if (!chk.ok) throw new Error(chk.error);
       const pos = s.positions[a.positionId];
@@ -498,19 +672,6 @@ export function reduce(prev, a) {
       pos.status = 'sold';
       pos.soldValue = chk.value;
       pos.soldAfter = stock.status === 'resolved';
-      break;
-    }
-    case 'sellAllResolved': {
-      requirePlayer(s, a);
-      if (s.players[a.pid].eliminated) throw new Error("You're out of the tournament");
-      for (const pos of heldPositions(s, a.pid)) {
-        const stock = s.stocks[pos.stockId];
-        if (stock.status !== 'resolved') continue;
-        s.players[a.pid].cash += pos.value;
-        pos.status = 'sold';
-        pos.soldValue = pos.value;
-        pos.soldAfter = true;
-      }
       break;
     }
     default:

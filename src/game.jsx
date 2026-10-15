@@ -26,7 +26,7 @@ export function GameProvider({ children }) {
     }
   }, []);
 
-  const value = { state: snap.state, ready: snap.ready, error: snap.error, dispatch, setToast };
+  const value = { state: snap.state, ready: snap.ready, error: snap.error, dispatch, setToast, profiles: ref.current.profiles };
   return (
     <Ctx.Provider value={value}>
       {children}

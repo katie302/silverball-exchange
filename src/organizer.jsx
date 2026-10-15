@@ -5,8 +5,9 @@ import { isLocal } from './firebase.js';
 import { Btn, Card, Chip, Input, Label, OrderPicker, Select, cx, fmtClock, orderComplete } from './ui.jsx';
 import { exportCsv, exportJson } from './export.js';
 import {
-  PHASE_LABELS, activePlayers, allBoughtIn, computeFix, currentRound, describeEvent, eventDelta,
-  groupOf, isFinalRound, leaderboard, minSelfCost, money, ordinal, roundPhase,
+  PHASE_LABELS, activePlayers, computeFix, currentRound, describeEvent, eventDelta,
+  importTournament, isFinalRound, leaderboard, minSelfCost, money, ordinal, ratingMap, roundPhase,
+  rosterChanged, saveToProfiles, doneCount, marketClosed, openEndsAt, seedFromProfiles,
 } from './engine/index.js';
 
 const splitLines = (t) => t.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean);
@@ -29,7 +30,9 @@ function SettingsCard({ send }) {
       maxPctPerStock: st.maxPctPerStock ?? '', maxSelfBuyPct: st.maxSelfBuyPct ?? '',
       tiers: st.tiers.map((t) => `${t.upTo}:${t.price}`).join(', '),
       payout4: st.payout4.join(', '), payout3: st.payout3.join(', '), payout2: st.payout2.join(', '),
-      finalRoundMult: String(st.finalRoundMult), selfBuySeconds: String(st.selfBuySeconds),
+      finalRoundMult: String(st.finalRoundMult), selfBuySeconds: String(st.selfBuySeconds), openSeconds: String(st.openSeconds ?? 0),
+      style: st.style, minBet: String(st.minBet), houseBonusFinalPct: String(st.houseBonusFinalPct),
+      showOdds: st.showOdds, useIfpa: st.useIfpa,
     });
   const set = (k) => (e) => setD({ ...d, [k]: e.target.value });
   const nums = (t) => t.split(',').map((x) => parseFloat(x.trim()));
@@ -43,7 +46,9 @@ function SettingsCard({ send }) {
         return { upTo: u, price: p };
       }),
       payout4: nums(d.payout4), payout3: nums(d.payout3), payout2: nums(d.payout2),
-      finalRoundMult: parseFloat(d.finalRoundMult), selfBuySeconds: parseInt(d.selfBuySeconds, 10),
+      finalRoundMult: parseFloat(d.finalRoundMult), selfBuySeconds: parseInt(d.selfBuySeconds, 10), openSeconds: parseInt(d.openSeconds, 10),
+      style: d.style, minBet: parseInt(d.minBet, 10), houseBonusFinalPct: parseFloat(d.houseBonusFinalPct),
+      showOdds: !!d.showOdds, useIfpa: !!d.useIfpa,
     };
     if (await send('updateSettings', { patch })) setD(null);
   };
@@ -61,24 +66,41 @@ function SettingsCard({ send }) {
       </div>
       {!open ? (
         <div className="mt-2 space-y-1 font-mono text-xs text-muted">
-          <div>Start {money(st.startingCash)} · {st.rounds} rounds · min self-buy {st.minSelfBuyPct}% ({money(minSelfCost(st))})</div>
-          <div>Max per stock {st.maxPctPerStock ?? 'none'} · max self-buy {st.maxSelfBuyPct ?? 'none'} · self-buy window {st.selfBuySeconds}s</div>
+          <div>Style: {st.style === 'horse' ? 'Horse betting' : 'Stocks'} · odds {st.showOdds ? 'on' : 'off'} · IFPA ratings {st.useIfpa ? 'on' : 'off'}</div>
+          <div>Start {money(st.startingCash)} · {st.rounds} rounds · {st.style === 'horse' ? `min bet ${money(st.minBet)}` : `min self-buy ${st.minSelfBuyPct}% (${money(minSelfCost(st))})`}</div>
+          <div>Max per stock {st.maxPctPerStock ?? 'none'} · max self-buy {st.maxSelfBuyPct ?? 'none'} · self-buy window {st.selfBuySeconds}s · market timer {st.openSeconds ? st.openSeconds + 's' : 'none'}</div>
           <div>Tiers {st.tiers.map((t) => `≤${t.upTo}%:$${t.price}`).join(' ')}</div>
           <div>Payout 4p {st.payout4.join('/')} · 3p {st.payout3.join('/')} · 2p {st.payout2.join('/')} · final ×{st.finalRoundMult}</div>
         </div>
       ) : (
         <div className="mt-3 space-y-3">
+          <div>
+            <Label>Game style {state.status !== 'setup' && '(locked once round 1 starts)'}</Label>
+            <Select value={d.style} disabled={state.status !== 'setup'} onChange={set('style')}>
+              <option value="stocks">Stocks (buy % of a player's stock)</option>
+              <option value="horse">Horse betting (pooled bets, odds)</option>
+            </Select>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={d.showOdds} onChange={(e) => setD({ ...d, showOdds: e.target.checked })} /> Show odds to everyone
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={d.useIfpa} onChange={(e) => setD({ ...d, useIfpa: e.target.checked })} /> Use IFPA / Matchplay ratings for odds
+          </label>
           {row('Starting cash', 'startingCash')}
           {row('Rounds', 'rounds')}
           {row('Min self-buy %', 'minSelfBuyPct')}
           {row('Max % per stock (blank = none)', 'maxPctPerStock')}
           {row('Max self-buy % (blank = none)', 'maxSelfBuyPct')}
           {row('Self-buy window (seconds)', 'selfBuySeconds')}
+          {row('Market-open timer after that (seconds, 0 = none)', 'openSeconds')}
           {row('Price tiers (upTo:price, …)', 'tiers', '25:10, 50:12, 75:15, 100:20')}
           {row('Payout % for 4 players (1st…4th)', 'payout4')}
           {row('Payout % for 3 players', 'payout3')}
           {row('Payout % for 2 players', 'payout2')}
-          {row('Final round multiplier', 'finalRoundMult')}
+          {row('Final round multiplier (stocks)', 'finalRoundMult')}
+          {row('Horse: minimum bet ($)', 'minBet')}
+          {row('Horse: house bonus on pools in final round (%)', 'houseBonusFinalPct')}
           <div className="flex gap-2">
             <Btn onClick={save}>Save</Btn>
             <Btn kind="ghost" onClick={() => setD(null)}>Cancel</Btn>
@@ -116,6 +138,18 @@ function EventCard({ send }) {
   );
 }
 
+function boughtIn(state) {
+  const r = currentRound(state);
+  const need = state.settings.minSelfBuyPct;
+  const needBet = minSelfCost(state.settings);
+  return Object.keys(r.stockByPlayer).filter((pid) => {
+    const sid = r.stockByPlayer[pid];
+    if (state.settings.style === 'horse')
+      return Object.values(state.bets || {}).filter((b) => b.bettorId === pid && b.stockId === sid).reduce((a, b) => a + b.amount, 0) >= needBet;
+    return Object.values(state.positions).filter((x) => x.holderId === pid && x.stockId === sid && x.status === 'held').reduce((a, x) => a + x.pct, 0) >= need;
+  }).length;
+}
+
 function RoundTab({ send }) {
   const { state } = useGame();
   const now = useNow();
@@ -124,6 +158,11 @@ function RoundTab({ send }) {
   const phase = roundPhase(state, now);
   const claimed = state.playerOrder.filter((id) => state.players[id].claimed).length;
   const avail = state.machineOrder.filter((id) => !state.machines[id].pulled).length;
+  const horse = state.settings.style === 'horse';
+  const stale = (phase === 'self' || phase === 'open') && rosterChanged(state);
+  const restart = async () => {
+    if (window.confirm('Restart this round? Everyone gets their buy-ins back, then groups and machines are redrawn.')) await send('restartRound');
+  };
 
   if (state.status === 'setup') {
     const needGroups = Math.ceil(state.playerOrder.length / 4);
@@ -158,21 +197,43 @@ function RoundTab({ send }) {
           </div>
           {phase === 'self' && r.selfEndsAt && <Chip tone="amber">{fmtClock(r.selfEndsAt - now)}</Chip>}
         </div>
+        {stale && (
+          <div className="mt-3 rounded-xl border border-amber p-3 text-sm">
+            The roster changed since groups were drawn. Restart the round so everyone gets a group.
+            <div className="mt-2"><Btn small onClick={restart}>Restart round now</Btn></div>
+          </div>
+        )}
         {phase === 'self' && (
           <>
-            <p className="mt-2 text-sm text-muted">{Object.keys(r.stockByPlayer).filter((pid) => state.stocks[r.stockByPlayer[pid]].soldPct >= state.settings.minSelfBuyPct).length}/{Object.keys(r.stockByPlayer).length} bought in{allBoughtIn(state) ? '' : ''}</p>
-            <div className="mt-3 flex gap-2">
+            <p className="mt-2 text-sm text-muted">{boughtIn(state)}/{Object.keys(r.stockByPlayer).length} {horse ? 'bet in' : 'bought in'}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
               <Btn kind="mint" onClick={() => send('openTrading')}>Open market now</Btn>
-              <Btn kind="ghost" onClick={() => send('lockRound')}>Lock round</Btn>
+              <Btn kind="ghost" disabled={stale} onClick={() => send('lockRound')}>Lock round</Btn>
+              <Btn kind="ghost" onClick={restart}>Restart round</Btn>
             </div>
           </>
         )}
-        {phase === 'open' && <Btn className="mt-3" onClick={() => send('lockRound')}>Lock round (matches start)</Btn>}
+        {phase === 'open' && !horse && (() => {
+          const end = openEndsAt(state);
+          const dc = doneCount(state);
+          return (
+            <p className="mt-2 text-sm text-muted">
+              {marketClosed(state, now) ? 'Market closed (timer ended or everyone is done). ' : end != null ? `Market closes in ${fmtClock(end - now)}. ` : ''}
+              {dc.done}/{dc.total} done buying.
+            </p>
+          );
+        })()}
+        {phase === 'open' && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Btn disabled={stale} onClick={() => send('lockRound')}>Lock round (matches start)</Btn>
+            <Btn kind="ghost" onClick={restart}>Restart round</Btn>
+          </div>
+        )}
         {phase === 'locked' && (
           <div className="mt-2">
             <p className="text-sm text-muted">{r.groups.filter((g) => g.places).length}/{r.groups.length} results entered. Use the Results tab.</p>
             <Btn className="mt-3" disabled={!r.groups.every((g) => g.places)} onClick={() => send('continueFromResults')}>
-              {isFinalRound(state) ? 'Pay out final round' : 'Continue to market event'}
+              {isFinalRound(state) || horse ? 'Pay out round' : 'Continue to market event'}
             </Btn>
           </div>
         )}
@@ -264,7 +325,7 @@ function ResultsTab({ send }) {
       })}
       {phase === 'locked' && (
         <Btn className="w-full" disabled={!r.groups.every((g) => g.places)} onClick={() => send('continueFromResults')}>
-          {isFinalRound(state) ? 'Pay out final round' : 'Continue to market event'}
+          {isFinalRound(state) || state.settings.style === 'horse' ? 'Pay out round' : 'Continue to market event'}
         </Btn>
       )}
     </div>
@@ -303,32 +364,174 @@ function MachinesTab({ send }) {
 }
 
 // ---------- Roster ----------
+function SavedPlayers({ send }) {
+  const { state, profiles, setToast } = useGame();
+  const [list, setList] = useState(null);
+  const [picked, setPicked] = useState({});
+  const [showInactive, setShowInactive] = useState(false);
+  const toast = (msg) => setToast({ msg, id: Date.now() });
+  const reload = async () => { try { setList(await profiles.load()); } catch { setList({}); } };
+  useEffect(() => { reload(); }, [state.playerOrder.length]);
+  if (!list) return null;
+  const entries = Object.entries(list).sort((a, b) => a[1].name.localeCompare(b[1].name));
+  if (!entries.length) return null;
+  const onRoster = (pr) => state.playerOrder.some((id) => state.players[id].name.toLowerCase() === pr.name.toLowerCase());
+  const activeList = entries.filter(([, v]) => !v.inactive);
+  const inactiveList = entries.filter(([, v]) => v.inactive);
+  const setInactive = async (key, inactive) => {
+    await profiles.update((cur) => {
+      const next = structuredClone(cur);
+      if (!next[key]) return next;
+      if (inactive) next[key].inactive = true; else delete next[key].inactive;
+      return next;
+    });
+    await reload();
+  };
+  const remove = async (key) => {
+    await profiles.update((cur) => { const next = structuredClone(cur); delete next[key]; return next; });
+    await reload();
+  };
+  const addPicked = async () => {
+    const names = activeList.filter(([k]) => picked[k]).map(([, v]) => v.name);
+    if (!names.length) return;
+    if (await send('addPlayers', { names })) {
+      setPicked({});
+      toast(state.status === 'setup' ? `Added ${names.length}. Tap "Load history from past tournaments" to bring their ratings in.` : `Added ${names.length}.`);
+    }
+  };
+  return (
+    <Card>
+      <Label>Saved players (ratings carry over)</Label>
+      <div className="space-y-1">
+        {activeList.map(([key, v]) => {
+          const here = onRoster(v);
+          return (
+            <div key={key} className="flex items-center justify-between gap-2 text-sm">
+              <label className="flex min-w-0 items-center gap-2">
+                <input type="checkbox" disabled={here} checked={!!picked[key]} onChange={(e) => setPicked({ ...picked, [key]: e.target.checked })} />
+                <span className="truncate">{v.name}</span>
+                <span className="font-mono text-[11px] text-dim">{Math.round(v.rating)} · {v.games} games{here ? ' · on roster' : ''}</span>
+              </label>
+              <Btn small kind="ghost" onClick={() => setInactive(key, true)}>Make inactive</Btn>
+            </div>
+          );
+        })}
+        {!activeList.length && <div className="text-sm text-dim">No active saved players.</div>}
+      </div>
+      <Btn small className="mt-2" onClick={addPicked}>Add checked to this tournament</Btn>
+      {inactiveList.length > 0 && (
+        <div className="mt-3 border-t border-line pt-2">
+          <button className="text-xs text-muted underline" onClick={() => setShowInactive(!showInactive)}>
+            {showInactive ? 'Hide' : 'Show'} inactive ({inactiveList.length})
+          </button>
+          {showInactive && (
+            <div className="mt-2 space-y-1">
+              {inactiveList.map(([key, v]) => (
+                <div key={key} className="flex items-center justify-between gap-2 text-sm text-muted">
+                  <span className="truncate">{v.name} <span className="font-mono text-[11px] text-dim">{Math.round(v.rating)} · {v.games} games</span></span>
+                  <span className="flex gap-2">
+                    <Btn small kind="ghost" onClick={() => setInactive(key, false)}>Reactivate</Btn>
+                    <Btn small kind="danger" onClick={() => remove(key)}>Delete</Btn>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="mt-2 text-xs text-dim">Inactive players keep their stats but aren't offered in the list above. If you add one by name later, their history still loads.</p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function RosterTab({ send }) {
-  const { state } = useGame();
+  const { state, profiles, setToast } = useGame();
   const [text, setText] = useState('');
+  const toast = (msg) => setToast({ msg, id: Date.now() });
+  const map = ratingMap(state);
+  const active = state.status === 'active';
+
+  const loadHistory = async () => {
+    const pr = await profiles.load();
+    const seed = seedFromProfiles(state, pr);
+    const n = Object.keys(seed).length;
+    if (!n) return toast('No saved history matches these players yet.');
+    if (await send('seedRatings', { ratings: seed })) toast(`Loaded history for ${n} player${n === 1 ? '' : 's'}.`);
+  };
+  const lookup = async () => {
+    const ids = state.playerOrder.map((id) => state.players[id].ifpaId).filter(Boolean);
+    if (!ids.length) return toast('Nobody has entered an IFPA # yet.');
+    try {
+      const r = await fetch(`/api/ratings?ids=${ids.join(',')}`);
+      const j = await r.json();
+      if (!r.ok) return toast(j.error || 'Lookup failed. Type ratings in by hand instead.');
+      const byPid = {};
+      for (const id of state.playerOrder) {
+        const f = state.players[id].ifpaId;
+        if (f && j.ratings[f] != null) byPid[id] = j.ratings[f];
+      }
+      await send('setRatings', { ratings: byPid });
+      toast(`Found ratings for ${Object.keys(byPid).length} of ${ids.length}.`);
+    } catch {
+      toast('Lookup is not available here. Type ratings in by hand instead.');
+    }
+  };
+
   return (
     <div className="space-y-3">
       <Card>
         <Label>Add players (paste a list, one per line)</Label>
         <textarea className="h-24 w-full rounded-xl border border-line bg-ink p-3 text-sm outline-none focus:border-pink" value={text} onChange={(e) => setText(e.target.value)} />
         <Btn className="mt-2" onClick={async () => { if (await send('addPlayers', { names: splitLines(text) })) setText(''); }}>Add</Btn>
+        {active && <p className="mt-2 text-xs text-dim">Late joiners start with the lower of the starting cash and the average net worth. If a round is open, restart it so they get a group.</p>}
       </Card>
-      <div className="text-sm text-muted">{state.playerOrder.filter((i) => state.players[i].claimed).length}/{state.playerOrder.length} claimed</div>
+      <SavedPlayers send={send} />
+      <Card>
+        <Label>Ratings for odds</Label>
+        <div className="flex flex-wrap gap-2">
+          <Btn small kind="ghost" onClick={lookup}>Look up IFPA ratings</Btn>
+          {state.status === 'setup' && <Btn small kind="ghost" onClick={loadHistory}>Load history from past tournaments</Btn>}
+        </div>
+      </Card>
+      <div className="text-sm text-muted">{state.playerOrder.filter((i) => state.players[i].claimed && !state.players[i].withdrawn).length}/{state.playerOrder.filter((i) => !state.players[i].withdrawn).length} claimed</div>
       {state.playerOrder.map((id) => {
         const p = state.players[id];
         return (
-          <div key={id} className="rounded-xl border border-line bg-surface px-4 py-2.5">
+          <div key={id} className={cx('rounded-xl border border-line bg-surface px-4 py-2.5', p.withdrawn && 'opacity-60')}>
             <div className="flex items-center justify-between">
               <span className="text-sm font-bold">{p.name}</span>
               <span className="flex gap-1">
+                {p.withdrawn && <Chip tone="amber">removed</Chip>}
                 {p.eliminated && <Chip tone="pink">out</Chip>}
                 <Chip tone={p.claimed ? 'mint' : 'amber'}>{p.claimed ? 'claimed' : 'open'}</Chip>
               </span>
             </div>
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                defaultValue={p.ifpaId || ''}
+                placeholder="IFPA #"
+                inputMode="numeric"
+                onBlur={(e) => e.target.value !== (p.ifpaId || '') && send('setIfpa', { pid: id, ifpaId: e.target.value })}
+                className="w-24 rounded-lg border border-line bg-ink px-2 py-1 text-xs outline-none focus:border-pink"
+              />
+              <input
+                key={`${id}-${p.ifpaRating}`}
+                defaultValue={p.ifpaRating ?? ''}
+                placeholder="rating"
+                inputMode="numeric"
+                onBlur={(e) => String(p.ifpaRating ?? '') !== e.target.value && send('setIfpa', { pid: id, ifpaId: p.ifpaId, ifpaRating: e.target.value })}
+                className="w-20 rounded-lg border border-line bg-ink px-2 py-1 text-xs outline-none focus:border-pink"
+              />
+              <span className="font-mono text-[11px] text-dim">now {Math.round(map[id].rating)} · {map[id].games} matches</span>
+            </div>
             <div className="mt-2 flex flex-wrap gap-2">
               <Btn small kind="ghost" onClick={() => { const n = window.prompt('New name', p.name); if (n) send('renamePlayer', { pid: id, name: n }); }}>Rename</Btn>
               {p.claimed && <Btn small kind="ghost" onClick={() => send('unclaimPlayer', { pid: id })}>Unclaim / reset PIN</Btn>}
-              {state.status === 'setup' && <Btn small kind="danger" onClick={() => send('removePlayer', { pid: id })}>Remove</Btn>}
+              {p.withdrawn ? (
+                <Btn small kind="mint" onClick={() => send('restorePlayer', { pid: id })}>Add back</Btn>
+              ) : (
+                <Btn small kind="danger" onClick={() => { if (state.status === 'setup' || window.confirm(`Remove ${p.name}? They stay in the history as withdrawn.`)) send('removePlayer', { pid: id }); }}>Remove</Btn>
+              )}
             </div>
           </div>
         );
@@ -339,26 +542,59 @@ function RosterTab({ send }) {
 
 // ---------- Wrap-up ----------
 function WrapTab({ send }) {
-  const { state } = useGame();
+  const { state, profiles, setToast } = useGame();
   const now = useNow();
   const [confirm, setConfirm] = useState('');
   const lb = leaderboard(state);
   const phase = roundPhase(state, now);
+  const toast = (msg) => setToast({ msg, id: Date.now() });
+  const saveHistory = async () => {
+    await profiles.update((cur) => saveToProfiles(state, cur));
+    toast('Ratings saved to history.');
+  };
+  const importFile = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    try {
+      const imported = JSON.parse(await f.text());
+      if (!imported.players || !imported.rounds) throw new Error('not a tournament export');
+      let count = 0;
+      await profiles.update((cur) => {
+        const r = importTournament(imported, cur);
+        count = r.count;
+        return r.profiles;
+      });
+      toast(`Imported ratings for ${count} players.`);
+    } catch (err) {
+      toast(`Couldn't read that file: ${err.message}`);
+    }
+    e.target.value = '';
+  };
   return (
     <div className="space-y-3">
       <Card>
         <Label>Standings</Label>
         {lb.map((r) => (
-          <div key={r.id} className="flex justify-between py-1 text-sm">
-            <span>{r.rank}. {r.name}{r.eliminated && ' (out)'}</span>
+          <div key={r.id} className={cx('flex justify-between py-1 text-sm', r.withdrawn && 'text-dim')}>
+            <span>{r.withdrawn ? '–' : `${r.rank}.`} {r.name}{r.eliminated && ' (out)'}{r.withdrawn && ' (withdrawn)'}</span>
             <span className="font-mono">{money(r.worth)}</span>
           </div>
         ))}
       </Card>
       <Card>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Btn kind="ghost" onClick={() => exportCsv(state)}>Export standings (CSV)</Btn>
           <Btn kind="ghost" onClick={() => exportJson(state)}>Export history (JSON)</Btn>
+        </div>
+      </Card>
+      <Card>
+        <Label>Ratings history (for odds in future tournaments)</Label>
+        <div className="flex flex-wrap items-center gap-2">
+          <Btn kind="ghost" onClick={saveHistory}>Save this tournament's ratings</Btn>
+          <label className="cursor-pointer rounded-xl border border-line px-4 py-3 font-display text-sm font-extrabold">
+            Import a past tournament file
+            <input type="file" accept=".json,application/json" className="hidden" onChange={importFile} />
+          </label>
         </div>
       </Card>
       {state.status === 'active' && phase === 'paid' && state.round >= state.settings.rounds && (
@@ -366,7 +602,7 @@ function WrapTab({ send }) {
       )}
       <Card className="border-pink">
         <b className="text-pink">Reset tournament</b>
-        <p className="mb-2 text-sm text-muted">Wipes rounds, stocks and cash. Keeps the roster, claimed names, settings and machines.</p>
+        <p className="mb-2 text-sm text-muted">Wipes rounds, stocks, bets and cash. Keeps the roster, claimed names, settings and machines.</p>
         <Input placeholder="Type RESET" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
         <Btn kind="danger" className="mt-2" disabled={confirm !== 'RESET'} onClick={async () => { if (await send('resetTournament', { confirm })) setConfirm(''); }}>
           Reset
@@ -381,7 +617,6 @@ function FixTab({ send }) {
   const { state } = useGame();
   const [sel, setSel] = useState('');
   const [order, setOrder] = useState([]);
-  const [policy, setPolicy] = useState('leave');
   const [cashPid, setCashPid] = useState('');
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
@@ -390,12 +625,11 @@ function FixTab({ send }) {
   const cur = paid.find((x) => `${x.round}:${x.g.id}` === sel);
   const names = cur ? Object.fromEntries(cur.g.playerIds.map((id) => [id, state.players[id].name])) : {};
   const changes = cur && orderComplete(cur.g.playerIds, order) ? computeFix(state, cur.round, cur.g.id, order) : [];
-  const soldChanges = changes.filter((c) => c.status === 'sold');
   return (
     <div className="space-y-3">
       <Card>
         <b>Fix a result</b>
-        <p className="mb-2 text-sm text-muted">Reopen a paid-out match, change the places and see the impact before applying. Market event bonuses stay as they were.</p>
+        <p className="mb-2 text-sm text-muted">Reopen a paid-out match, change the places and see the impact before applying. Everyone's cash is adjusted to match. Market event bonuses stay as they were.</p>
         <Select value={sel} onChange={(e) => { setSel(e.target.value); const x = paid.find((y) => `${y.round}:${y.g.id}` === e.target.value); setOrder(x ? x.g.places.slice() : []); }}>
           <option value="">Choose a match…</option>
           {paid.map((x) => (
@@ -412,19 +646,13 @@ function FixTab({ send }) {
                 <Label>Impact</Label>
                 {changes.map((c) => (
                   <div key={c.positionId} className="flex justify-between py-0.5">
-                    <span>{state.players[c.holderId].name} in {state.players[c.owner].name} {c.status === 'sold' && '(already sold)'}</span>
+                    <span>{state.players[c.holderId].name} on {state.players[c.owner].name}</span>
                     <span className={cx('font-mono', c.delta >= 0 ? 'text-mint' : 'text-pink')}>{c.delta >= 0 ? '+' : ''}{c.delta}</span>
                   </div>
                 ))}
               </div>
             )}
-            {soldChanges.length > 0 && (
-              <div className="mt-3 space-y-1 text-sm">
-                <label className="flex gap-2"><input type="radio" checked={policy === 'leave'} onChange={() => setPolicy('leave')} /> Leave cash of players who already sold</label>
-                <label className="flex gap-2"><input type="radio" checked={policy === 'adjust'} onChange={() => setPolicy('adjust')} /> Adjust their cash to match</label>
-              </div>
-            )}
-            <Btn className="mt-3" disabled={!orderComplete(cur.g.playerIds, order)} onClick={() => send('fixPlaces', { round: cur.round, groupId: cur.g.id, order, policy })}>
+            <Btn className="mt-3" disabled={!orderComplete(cur.g.playerIds, order)} onClick={() => send('fixPlaces', { round: cur.round, groupId: cur.g.id, order })}>
               Apply correction
             </Btn>
           </div>
