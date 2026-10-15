@@ -11,11 +11,26 @@ export default async function handler(req, res) {
     .filter((x) => /^\d+$/.test(x))
     .slice(0, 25);
   if (!ids.length) return res.status(400).json({ error: 'No valid IFPA numbers' });
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/json',
+    'User-Agent': 'SilverballExchange/2.0 (tournament odds; contact: organizer)',
+  };
   try {
-    const r = await fetch(`https://app.matchplay.events/api/ratings/ifpa?ifpaIds=${ids.join(',')}`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-    });
-    if (!r.ok) return res.status(502).json({ error: `Matchplay answered ${r.status}` });
+    // Try the dedicated IFPA endpoint first, then the general ratings endpoint.
+    const urls = [
+      `https://app.matchplay.events/api/ratings/ifpa?ifpaIds=${ids.join(',')}`,
+      `https://app.matchplay.events/api/ratings?ifpaIds=${ids.join(',')}`,
+    ];
+    let r = null;
+    let lastNote = '';
+    for (const u of urls) {
+      r = await fetch(u, { headers });
+      if (r.ok) break;
+      const body = (await r.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 160);
+      lastNote = `Matchplay answered ${r.status}${body ? ': ' + body : ''}`;
+    }
+    if (!r || !r.ok) return res.status(502).json({ error: lastNote || 'Matchplay did not answer' });
     const json = await r.json();
     const list = Array.isArray(json) ? json : json.data || json.ratings || [];
     const ratings = {};
