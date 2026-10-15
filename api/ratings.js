@@ -36,6 +36,7 @@ export default async function handler(req, res) {
     }
     if (!r || !r.ok) return res.status(502).json({ error: lastNote || 'Matchplay did not answer' });
     const json = await r.json();
+    if (req.query.debug) return res.status(200).json({ url: r.url, raw: json });
     const list = Array.isArray(json) ? json : json.data || json.ratings || [];
     const ratings = {};
     for (const it of list) {
