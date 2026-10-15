@@ -18,9 +18,13 @@ export default async function handler(req, res) {
   };
   try {
     // Try the dedicated IFPA endpoint first, then the general ratings endpoint.
+    // Matchplay asks for requests to go to api.matchplay.events (the docs still show app.).
+    const q = `ifpaIds=${ids.join(',')}`;
     const urls = [
-      `https://app.matchplay.events/api/ratings/ifpa?ifpaIds=${ids.join(',')}`,
-      `https://app.matchplay.events/api/ratings?ifpaIds=${ids.join(',')}`,
+      `https://api.matchplay.events/api/ratings/ifpa?${q}`,
+      `https://api.matchplay.events/api/ratings?${q}`,
+      `https://api.matchplay.events/ratings/ifpa?${q}`,
+      `https://api.matchplay.events/ratings?${q}`,
     ];
     let r = null;
     let lastNote = '';
