@@ -47,6 +47,7 @@ export const Chip = ({ children, tone = 'dim' }) => (
       'rounded-full px-2 py-0.5 font-mono text-[11px] font-semibold',
       tone === 'mint' && 'bg-mint/15 text-mint',
       tone === 'pink' && 'bg-pink/15 text-pink',
+      tone === 'loss' && 'bg-loss/15 text-loss',
       tone === 'amber' && 'bg-amber/15 text-amber',
       tone === 'dim' && 'bg-line text-muted'
     )}

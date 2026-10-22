@@ -7,7 +7,7 @@ import { exportCsv, exportJson } from './export.js';
 import {
   PHASE_LABELS, activePlayers, computeFix, currentRound, describeEvent, eventDelta,
   importTournament, isFinalRound, leaderboard, minSelfCost, money, ordinal, ratingMap, roundPhase,
-  rosterChanged, saveToProfiles, doneCount, marketClosed, openEndsAt, seedFromProfiles,
+  rosterChanged, saveToProfiles, doneCount, marketClosed, openEndsAt, seedFromProfiles, diversifyShort, diversifyStatus,
 } from './engine/index.js';
 
 const splitLines = (t) => t.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean);
@@ -28,6 +28,7 @@ function SettingsCard({ send }) {
     setD({
       startingCash: String(st.startingCash), rounds: String(st.rounds), minSelfBuyPct: String(st.minSelfBuyPct),
       maxPctPerStock: st.maxPctPerStock ?? '', maxSelfBuyPct: st.maxSelfBuyPct ?? '',
+      minOtherStocks: String(st.minOtherStocks ?? 0), minOtherShares: String(st.minOtherShares ?? 5),
       tiers: st.tiers.map((t) => `${t.upTo}:${t.price}`).join(', '),
       payout4: st.payout4.join(', '), payout3: st.payout3.join(', '), payout2: st.payout2.join(', '),
       finalRoundMult: String(st.finalRoundMult), selfBuySeconds: String(st.selfBuySeconds), openSeconds: String(st.openSeconds ?? 0),
@@ -41,6 +42,7 @@ function SettingsCard({ send }) {
     const patch = {
       startingCash: parseFloat(d.startingCash), rounds: parseInt(d.rounds, 10), minSelfBuyPct: parseInt(d.minSelfBuyPct, 10),
       maxPctPerStock: opt(d.maxPctPerStock), maxSelfBuyPct: opt(d.maxSelfBuyPct),
+      minOtherStocks: parseInt(d.minOtherStocks, 10), minOtherShares: parseInt(d.minOtherShares, 10),
       tiers: d.tiers.split(',').map((x) => {
         const [u, p] = x.trim().split(':').map(Number);
         return { upTo: u, price: p };
@@ -67,9 +69,9 @@ function SettingsCard({ send }) {
       {!open ? (
         <div className="mt-2 space-y-1 font-mono text-xs text-muted">
           <div>Style: {st.style === 'horse' ? 'Horse betting' : 'Stocks'} · odds {st.showOdds ? 'on' : 'off'} · IFPA ratings {st.useIfpa ? 'on' : 'off'}</div>
-          <div>Start {money(st.startingCash)} · {st.rounds} rounds · {st.style === 'horse' ? `min bet ${money(st.minBet)}` : `min self-buy ${st.minSelfBuyPct}% (${money(minSelfCost(st))})`}</div>
-          <div>Max per stock {st.maxPctPerStock ?? 'none'} · max self-buy {st.maxSelfBuyPct ?? 'none'} · self-buy window {st.selfBuySeconds}s · market timer {st.openSeconds ? st.openSeconds + 's' : 'none'}</div>
-          <div>Tiers {st.tiers.map((t) => `≤${t.upTo}%:$${t.price}`).join(' ')}</div>
+          <div>Start {money(st.startingCash)} · {st.rounds} rounds · {st.style === 'horse' ? `min bet ${money(st.minBet)}` : `min self-buy ${st.minSelfBuyPct} shares (${money(minSelfCost(st))})`}</div>
+          <div>Max shares per stock {st.maxPctPerStock ?? 'none'} · max own shares {st.maxSelfBuyPct ?? 'none'} (none in final round) · buy into {st.minOtherStocks || 'no'} others ({st.minOtherShares}+ shares each) · self-buy window {st.selfBuySeconds}s · market timer {st.openSeconds ? st.openSeconds + 's' : 'none'}</div>
+          <div>Tiers {st.tiers.map((t) => `≤${t.upTo} shares:$${t.price}`).join(' ')}</div>
           <div>Payout 4p {st.payout4.join('/')} · 3p {st.payout3.join('/')} · 2p {st.payout2.join('/')} · final ×{st.finalRoundMult}</div>
         </div>
       ) : (
@@ -77,7 +79,7 @@ function SettingsCard({ send }) {
           <div>
             <Label>Game style {state.status !== 'setup' && '(locked once round 1 starts)'}</Label>
             <Select value={d.style} disabled={state.status !== 'setup'} onChange={set('style')}>
-              <option value="stocks">Stocks (buy % of a player's stock)</option>
+              <option value="stocks">Stocks (buy shares of a player's stock)</option>
               <option value="horse">Horse betting (pooled bets, odds)</option>
             </Select>
           </div>
@@ -89,12 +91,14 @@ function SettingsCard({ send }) {
           </label>
           {row('Starting cash', 'startingCash')}
           {row('Rounds', 'rounds')}
-          {row('Min self-buy %', 'minSelfBuyPct')}
-          {row('Max % per stock (blank = none)', 'maxPctPerStock')}
-          {row('Max self-buy % (blank = none)', 'maxSelfBuyPct')}
+          {row('Min self-buy (shares)', 'minSelfBuyPct')}
+          {row('Max shares per stock (blank = none)', 'maxPctPerStock')}
+          {row('Max shares of your own stock (blank = none; no limit in final round)', 'maxSelfBuyPct')}
+          {row('Must buy into this many other players (0 = off; not in final round)', 'minOtherStocks')}
+          {row('Shares needed in another player to count', 'minOtherShares')}
           {row('Self-buy window (seconds)', 'selfBuySeconds')}
           {row('Market-open timer after that (seconds, 0 = none)', 'openSeconds')}
-          {row('Price tiers (upTo:price, …)', 'tiers', '25:10, 50:12, 75:15, 100:20')}
+          {row('Price tiers (shares sold : price per share, …)', 'tiers', '25:10, 50:12, 75:15, 100:20')}
           {row('Payout % for 4 players (1st…4th)', 'payout4')}
           {row('Payout % for 3 players', 'payout3')}
           {row('Payout % for 2 players', 'payout2')}
@@ -223,6 +227,30 @@ function RoundTab({ send }) {
             </p>
           );
         })()}
+        {phase === 'open' && !horse && (() => {
+          const short = diversifyShort(state);
+          if (!short.length) return null;
+          return (
+            <div className="mt-3 rounded-xl border border-amber p-3">
+              <div className="text-sm font-bold">Still need to buy into other players ({short.length})</div>
+              <div className="mt-2 space-y-2">
+                {short.map((id) => {
+                  const d = diversifyStatus(state, id);
+                  return (
+                    <div key={id} className="flex items-center justify-between gap-2 text-sm">
+                      <span>{state.players[id].name} <span className="text-dim">{d.have} of {d.need}</span></span>
+                      <Btn small kind="ghost" onClick={() => send('excuseBuyIn', { pid: id })}>Excuse</Btn>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-[11px] text-dim">Excused players keep their cash and can finish without buying into others. Nothing is bought for anyone.</p>
+            </div>
+          );
+        })()}
+        {phase === 'open' && !horse && (
+          <div className="mt-3"><Btn small kind="ghost" onClick={() => send('extendMarket', { seconds: 60 })}>+1 minute on the market timer</Btn></div>
+        )}
         {phase === 'open' && (
           <div className="mt-3 flex flex-wrap gap-2">
             <Btn disabled={stale} onClick={() => send('lockRound')}>Lock round (matches start)</Btn>
@@ -647,7 +675,7 @@ function FixTab({ send }) {
                 {changes.map((c) => (
                   <div key={c.positionId} className="flex justify-between py-0.5">
                     <span>{state.players[c.holderId].name} on {state.players[c.owner].name}</span>
-                    <span className={cx('font-mono', c.delta >= 0 ? 'text-mint' : 'text-pink')}>{c.delta >= 0 ? '+' : ''}{c.delta}</span>
+                    <span className={cx('font-mono', c.delta >= 0 ? 'text-mint' : 'text-loss')}>{c.delta >= 0 ? '+' : ''}{c.delta}</span>
                   </div>
                 ))}
               </div>

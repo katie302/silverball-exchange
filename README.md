@@ -36,8 +36,21 @@ Roster + Machines > Round (Start) > self-buy window > Open market > Lock round >
 - Horse: Win / Place / Show pools per group, no self-bet or cash reserve required, final-round house bonus.
 - Add or remove players any time before Lock (removed = "withdrawn", shown last), restart a round until Lock.
 - Live "who owns / who bet what" on every stock, kept after lock and payout.
-- Odds from one blended rating (IFPA rating + saved history + this tournament). Players can switch between "3-to-1" and "25%".
+- Odds from one blended rating (IFPA rating + saved history + this tournament). Players can switch between sportsbook odds (+300, the default), "3-to-1" and "25%".
 - Saved players (profiles) that can be made inactive without losing their stats.
+
+## Post-tournament update
+- **Shares wording** everywhere (not "%"): "N shares sold", "next share $X", "you own N shares". A "popular" chip shows at 100+ shares sold.
+- **New defaults** (new tournaments only): share prices 25:20, 50:25, 75:30, 100:40; payouts are top-heavy: 4 players +80 / +25 / -15 / -45, 3 players +80 / +10 / -45, 2 players +80 / -45; final round x1.5. Own-stock cap is 40 shares (lifted in the final round). Min self-buy 10 shares, cash reserve and elimination line are the cost of those 10 shares ($200).
+- **Existing saved tournaments keep their old settings** (no self-buy cap, old payouts and prices) until you change them in Settings or reset. Prices to type: `25:20, 50:25, 75:30, 100:40`.
+- **Buy into others before "done"**: each player must hold 5+ shares in 2 other players' stocks (auto-waived to what they can afford; organizer can Excuse a player; organizer can add +1 minute to the market). Off in the final round.
+- **Market tab**: group cards per machine (your match first), big red "I'M DONE BUYING" button with countdown, profit-first buy sheet with a slider and "See the math", top pick per game, "You made/lost $X" on resolved rows.
+- **Pending results**: players see suggested/pending results, projected payouts, projected net worth and standings arrows ("up 2 places").
+- **Portfolio** grouped by round with the payout math; **Board** has a net-worth chart (tap names to add up to 6) with a dotted projection.
+- **Event reveal** shown to everyone after the organizer applies or skips it.
+- **First-round walkthrough** and a FINAL ROUND popup/banner (once per phone).
+- **End screen**: winner, your finish ("#8 of 8 players"), most profitable stock, best stocks overall, awards, standings. The chart and awards need per-round history, so they only fill in for tournaments started on this version.
+- Matches tab removed; the IFPA number box lives in Portfolio until round 1 is paid.
 
 ## Optional: IFPA rating lookup
 `api/ratings.js` is a Vercel function. Add an environment variable `MATCHPLAY_TOKEN` in Vercel and redeploy to enable

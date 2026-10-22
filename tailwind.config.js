@@ -11,6 +11,7 @@ export default {
         muted: '#B0A8CC',
         dim: '#8A7DB8',
         pink: '#F25C9F',
+        loss: '#FF6B6B',
         mint: '#4FD8BE',
         amber: '#FF9F5A',
       },

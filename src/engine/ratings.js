@@ -95,6 +95,17 @@ export function fmtPct(p) {
   return `${Math.round(p * 100)}%`;
 }
 
+// American moneyline from a probability: favourites -150, underdogs +300, even +100.
+export function fmtMoneyline(p) {
+  const q = Math.min(0.99, Math.max(0.01, p));
+  let v = q >= 0.5 ? -(100 * q) / (1 - q) : (100 * (1 - q)) / q;
+  const step = Math.abs(v) >= 1000 ? 50 : 5;
+  v = Math.round(v / step) * step;
+  if (v > -100 && v < 100) v = q >= 0.5 ? -100 : 100;
+  if (v === -100) v = 100; // an exact coin flip reads +100
+  return v > 0 ? `+${v}` : `${v}`;
+}
+
 // Fair odds in "N-to-1" form from a probability.
 export function fmtOdds(p) {
   const q = Math.min(0.99, Math.max(0.01, p));

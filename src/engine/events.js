@@ -79,21 +79,21 @@ export function describeEvent(s, ev) {
   const mname = ev.machineId && s.machines[ev.machineId] ? s.machines[ev.machineId].name : '';
   switch (ev.kind) {
     case 'hotMachine':
-      return { name: 'Hot machine', blurb: `Stocks of players on ${mname} get ${sgn(ev.delta)} points.` };
+      return { name: 'Hot machine', blurb: `Stocks of players on ${mname} get ${sgn(ev.delta)}%.` };
     case 'stickyFlippers':
-      return { name: 'Sticky flippers', blurb: `Stocks of players on ${mname} get ${sgn(ev.delta)} points.` };
+      return { name: 'Sticky flippers', blurb: `Stocks of players on ${mname} get ${sgn(ev.delta)}%.` };
     case 'upsetDay':
-      return { name: 'Upset day', blurb: `Last place in every group gets ${sgn(ev.delta)} points.` };
+      return { name: 'Upset day', blurb: `Last place in every group gets ${sgn(ev.delta)}%.` };
     case 'winnerTakesAll':
-      return { name: 'Winner takes all', blurb: `First place in every group gets ${sgn(ev.delta)} points.` };
+      return { name: 'Winner takes all', blurb: `First place in every group gets ${sgn(ev.delta)}%.` };
     case 'boom':
-      return { name: 'Bull run', blurb: `Every stock gets ${sgn(ev.delta)} points.` };
+      return { name: 'Bull run', blurb: `Every stock gets ${sgn(ev.delta)}%.` };
     case 'correction':
-      return { name: 'Market correction', blurb: `Every stock gets ${sgn(ev.delta)} points.` };
+      return { name: 'Market correction', blurb: `Every stock gets ${sgn(ev.delta)}%.` };
     case 'hotHand':
       return {
         name: 'Hot hand',
-        blurb: `Last round's group winners get ${sgn(ev.delta)} points on their stock this round.`,
+        blurb: `Last round's group winners get ${sgn(ev.delta)}% on their stock this round.`,
       };
     default:
       return { name: ev.kind, blurb: '' };

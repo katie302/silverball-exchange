@@ -15,6 +15,7 @@ import {
   rosterChanged,
   allBoughtIn,
   marketClosed,
+  diversifyStatus,
 } from './selectors.js';
 import { computeFix } from './fix.js';
 import { checkBet, payoutHorse } from './horse.js';
@@ -94,11 +95,14 @@ function startRound(s, now, restarts = 0) {
     throw new Error(`Need ${groupsIds.length} machines for ${active.length} players, only ${order.length} available`);
   const round = {
     n,
+    startedAt: now,
     phase: 'self',
     selfEndsAt: s.settings.selfBuySeconds > 0 ? now + s.settings.selfBuySeconds * 1000 : now,
     groups: [],
     stockByPlayer: {},
     done: {},
+    excused: {},
+    extraSeconds: 0,
     event: null,
     restarts,
   };
@@ -185,6 +189,8 @@ function payoutRound(s, now, event) {
       }
     }
   }
+  r.worths = {};
+  for (const id of s.playerOrder) r.worths[id] = netWorth(s, id);
   log(s, now, `Round ${r.n} paid out`);
 }
 
@@ -322,8 +328,10 @@ export function reduce(prev, a) {
       if (!num(next.startingCash) || next.startingCash < 0) throw new Error('Starting cash is invalid');
       if (!Number.isInteger(next.rounds) || next.rounds < 1) throw new Error('Rounds must be 1 or more');
       if (!Number.isInteger(next.minSelfBuyPct) || next.minSelfBuyPct < 1 || next.minSelfBuyPct > 100)
-        throw new Error('Min self-buy must be 1-100%');
+        throw new Error('Min self-buy must be 1-100 shares');
       if (next.openSeconds != null && (!Number.isInteger(next.openSeconds) || next.openSeconds < 0)) throw new Error('Market timer must be 0 or more seconds');
+      if (!Number.isInteger(next.minOtherStocks) || next.minOtherStocks < 0) throw new Error('Buy-into-others must be 0 or more');
+      if (!Number.isInteger(next.minOtherShares) || next.minOtherShares < 1) throw new Error('Shares needed per other stock must be 1 or more');
       for (const k of ['maxPctPerStock', 'maxSelfBuyPct'])
         if (next[k] != null && (!Number.isInteger(next[k]) || next[k] < 1)) throw new Error('Limits must be whole numbers');
       let last = 0;
@@ -331,7 +339,7 @@ export function reduce(prev, a) {
         if (!(t.upTo > last) || !(t.price > 0)) throw new Error('Price tiers are invalid');
         last = t.upTo;
       }
-      if (last !== 100) throw new Error('The last price tier must end at 100%');
+      if (last !== 100) throw new Error('The last price tier must end at 100 shares');
       for (const k of ['payout4', 'payout3', 'payout2']) if (!next[k].every(num)) throw new Error('Payouts are invalid');
       if (!num(next.finalRoundMult) || next.finalRoundMult <= 0) throw new Error('Final multiplier is invalid');
       if (!['stocks', 'horse'].includes(next.style)) throw new Error('Unknown game style');
@@ -388,8 +396,34 @@ export function reduce(prev, a) {
       if (!r || r.stockByPlayer[a.pid] == null) throw new Error("You're not in this round");
       if (roundPhase(s, now) !== 'open') throw new Error('The market is not open');
       if (marketClosed(s, now)) throw new Error('The market is already closed');
+      if (!a.undo) {
+        const d = diversifyStatus(s, a.pid);
+        if (!d.met) {
+          const more = d.need - d.have;
+          throw new Error(`Buy into ${more} more other player${more === 1 ? '' : 's'} first (at least ${st.minOtherShares} shares each)`);
+        }
+      }
       r.done = r.done || {};
       if (a.undo) delete r.done[a.pid]; else r.done[a.pid] = true;
+      break;
+    }
+    case 'excuseBuyIn': {
+      requireOrg(s, a);
+      requireActive(s);
+      const r = currentRound(s);
+      if (!r || r.stockByPlayer[a.pid] == null) throw new Error('That player is not in this round');
+      r.excused = r.excused || {};
+      if (a.undo) delete r.excused[a.pid]; else r.excused[a.pid] = true;
+      break;
+    }
+    case 'extendMarket': {
+      requireOrg(s, a);
+      requireActive(s);
+      const r = currentRound(s);
+      if (!r || (r.phase !== 'self' && r.phase !== 'open')) throw new Error('The market is not open');
+      const add = Number.isInteger(a.seconds) && a.seconds > 0 ? a.seconds : 60;
+      r.extraSeconds = (r.extraSeconds || 0) + add;
+      log(s, now, `Market extended by ${add}s`);
       break;
     }
     case 'openTrading': {
@@ -570,6 +604,7 @@ export function reduce(prev, a) {
       }
       for (const c of changes) {
         s.players[c.holderId].cash += c.delta;
+        for (const rr of s.rounds) if (rr.n >= a.round && rr.worths && rr.worths[c.holderId] != null) rr.worths[c.holderId] += c.delta;
         if (st.style === 'horse') s.bets[c.positionId].payout = c.newValue;
         else {
           const pos = s.positions[c.positionId];

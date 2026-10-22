@@ -5,17 +5,19 @@ export const DEFAULT_SETTINGS = {
   rounds: 6,
   minSelfBuyPct: 10,
   maxPctPerStock: null, // null = no cap per buyer per stock
-  maxSelfBuyPct: null, // null = no separate cap on buying your own stock
+  maxSelfBuyPct: 40, // most shares of your own stock you can hold (null = no cap). Lifted in the final round.
+  minOtherStocks: 2, // stocks style: buy into this many OTHER players before you can say you're done (0 = off, not in the final round)
+  minOtherShares: 5, // shares needed in another player's stock for it to count
   tiers: [
-    { upTo: 25, price: 10 },
-    { upTo: 50, price: 12 },
-    { upTo: 75, price: 15 },
-    { upTo: 100, price: 20 },
+    { upTo: 25, price: 20 },
+    { upTo: 50, price: 25 },
+    { upTo: 75, price: 30 },
+    { upTo: 100, price: 40 },
   ],
   // Payout by finishing place, in percent of what was paid.
-  payout4: [30, 10, -10, -30],
-  payout3: [30, 0, -30],
-  payout2: [30, -30],
+  payout4: [80, 25, -15, -45],
+  payout3: [80, 10, -45],
+  payout2: [80, -45],
   finalRoundMult: 1.5,
   selfBuySeconds: 300,
   openSeconds: 300, // how long the market stays open after the self-buy window (0 = no timer)

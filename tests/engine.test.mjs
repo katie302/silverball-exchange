@@ -3,16 +3,17 @@ import assert from 'node:assert/strict';
 import {
   reduce, initialState, quote, groupSizes, hashPin, netWorth, roundPhase, checkBuy, checkBet,
   leaderboard, activePlayers, currentRound, computeFix, DEFAULT_SETTINGS, ratingMap, groupOdds,
-  fmtOdds, holdersOf, rosterChanged,
+  fmtOdds, holdersOf, rosterChanged, diversifyStatus, diversifyShort, projection, suggestedOrder, bestStocks, worthHistory,
+  isFinalRound, awards,
 } from '../src/engine/index.js';
 
 const ORG = 'org@example.com';
 
 test('pricing is marginal by tier', () => {
   const t = DEFAULT_SETTINGS.tiers;
-  assert.equal(quote(0, 35, t), 370);
-  assert.equal(quote(0, 100, t), 1425);
-  assert.equal(quote(42, 20, t), 8 * 12 + 12 * 15);
+  assert.equal(quote(0, 35, t), 750);
+  assert.equal(quote(0, 100, t), 2875);
+  assert.equal(quote(42, 20, t), 8 * 25 + 12 * 30);
 });
 
 test('group sizes', () => {
@@ -228,7 +229,7 @@ test('rules: others blocked in self window', async () => {
 });
 
 test('market closes on timer or when everyone is done buying', async () => {
-  const g = await setup(4, 2, { openSeconds: 60, selfBuySeconds: 100 });
+  const g = await setup(4, 2, { openSeconds: 60, selfBuySeconds: 100, minOtherStocks: 0 });
   g.send('startTournament');
   const r = currentRound(g.s);
   const ids = r.groups[0].playerIds;
@@ -252,4 +253,127 @@ test('market closes on timer or when everyone is done buying', async () => {
   h.as(a, 'buy', { stockId: r2.stockByPlayer[b], pct: 5 });
   h.tick(61 * 1000);
   assert.throws(() => h.as(a, 'buy', { stockId: r2.stockByPlayer[b], pct: 5 }), /closed/);
+});
+
+test('self-buy cap is 40 shares, lifted in the final round', async () => {
+  const g = await setup(4, 2);
+  g.send('startTournament');
+  let r = currentRound(g.s);
+  const [a] = r.groups[0].playerIds;
+  assert.equal(g.s.settings.maxSelfBuyPct, 40);
+  g.as(a, 'buy', { stockId: r.stockByPlayer[a], pct: 40 });
+  assert.throws(() => g.as(a, 'buy', { stockId: r.stockByPlayer[a], pct: 1 }), /at most 40/);
+});
+
+test('buy into other players: required, adjusts to cash, excusable, off in the final round', async () => {
+  const g = await setup(4, 2, { selfBuySeconds: 100 });
+  g.send('startTournament');
+  let r = currentRound(g.s);
+  const ids = r.groups[0].playerIds;
+  const S = r.stockByPlayer;
+  for (const pid of ids) g.as(pid, 'buy', { stockId: S[pid], pct: 10 });
+  const [a, b, c, d] = ids;
+  assert.deepEqual(diversifyStatus(g.s, a), { need: 2, have: 0, met: false, excused: false, waived: false });
+  assert.throws(() => g.as(a, 'doneBuying'), /Buy into 2 more/);
+  g.as(a, 'buy', { stockId: S[b], pct: 4 }); // too small to count
+  assert.equal(diversifyStatus(g.s, a).have, 0);
+  g.as(a, 'buy', { stockId: S[b], pct: 1 });
+  assert.equal(diversifyStatus(g.s, a).have, 1);
+  assert.throws(() => g.as(a, 'doneBuying'), /Buy into 1 more/);
+  assert.ok(diversifyShort(g.s).includes(a));
+  g.as(a, 'buy', { stockId: S[c], pct: 5 });
+  g.as(a, 'doneBuying');
+  // organizer excuse
+  assert.throws(() => g.as(b, 'doneBuying'), /Buy into/);
+  g.send('excuseBuyIn', { pid: b });
+  g.as(b, 'doneBuying');
+  // a player who cannot afford it is waived down, never forced to spend the reserve
+  g.send('adjustCash', { pid: d, amount: -(g.s.players[d].cash - 130) }); // 130 left: reserve 100 + 30 spare
+  const st = diversifyStatus(g.s, d);
+  assert.equal(st.need, 2 - 0 > 0 ? st.need : 0);
+  assert.ok(st.need <= 2 && st.waived === (st.need < 2));
+  g.send('adjustCash', { pid: d, amount: -(g.s.players[d].cash - 100) }); // only the reserve left
+  assert.equal(diversifyStatus(g.s, d).need, 0);
+  g.as(d, 'doneBuying');
+  // extend the market
+  const end = currentRound(g.s).selfEndsAt;
+  g.send('extendMarket');
+  assert.equal(currentRound(g.s).extraSeconds, 60);
+});
+
+test('final round: no cap on own stock, no buy-into-others rule', async () => {
+  const g = await setup(4, 1, { selfBuySeconds: 100 });
+  g.send('startTournament');
+  const r = currentRound(g.s);
+  assert.ok(isFinalRound(g.s));
+  const [a] = r.groups[0].playerIds;
+  g.as(a, 'buy', { stockId: r.stockByPlayer[a], pct: 60 });
+  assert.equal(diversifyStatus(g.s, a).need, 0);
+});
+
+test('suggested results project payouts, conflicts are flagged, history and best stock', async () => {
+  const g = await setup(4, 2, { selfBuySeconds: 100, minOtherStocks: 0 });
+  g.send('startTournament');
+  let r = currentRound(g.s);
+  const ids = r.groups[0].playerIds;
+  const S = r.stockByPlayer;
+  for (const pid of ids) g.as(pid, 'buy', { stockId: S[pid], pct: 10 });
+  const [a, b, c, d] = ids;
+  g.as(b, 'buy', { stockId: S[a], pct: 10 });
+  const costB = Object.values(g.s.positions).find((p) => p.holderId === b && p.stockId === S[a]).cost;
+  assert.equal(projection(g.s, g.t), null); // nothing before the match starts
+  g.send('lockRound');
+  let pr = projection(g.s, g.t);
+  assert.equal(pr.groups[r.groups[0].id].status, 'none');
+  g.as(a, 'submitReport', { groupId: r.groups[0].id, order: [a, b, c, d] });
+  g.tick(10);
+  g.as(b, 'submitReport', { groupId: r.groups[0].id, order: [b, a, c, d] });
+  const sug = suggestedOrder(g.s, currentRound(g.s).groups[0]);
+  assert.equal(sug.status, 'suggested');
+  assert.equal(sug.conflict, true);
+  assert.deepEqual(sug.order, [b, a, c, d]); // latest wins
+  g.tick(10);
+  g.as(b, 'submitReport', { groupId: r.groups[0].id, order: [a, b, c, d] });
+  g.tick(10);
+  g.as(a, 'submitReport', { groupId: r.groups[0].id, order: [a, b, c, d] });
+  assert.equal(suggestedOrder(g.s, currentRound(g.s).groups[0]).conflict, false);
+  pr = projection(g.s, g.t);
+  assert.equal(pr.anyPending, true);
+  const stockA = S[a];
+  assert.equal(pr.stocks[stockA].place, 1);
+  assert.equal(pr.stocks[stockA].change, DEFAULT_SETTINGS.payout4[0]);
+  assert.ok(pr.players[a].delta > 0 && pr.players[d].delta < 0);
+  // official result then payout: projection matches (event skipped)
+  g.send('setPlaces', { groupId: r.groups[0].id, order: [a, b, c, d] });
+  const before = netWorth(g.s, a);
+  const projA = projection(g.s, g.t).players[a].worth;
+  g.send('continueFromResults');
+  g.send('skipEvent');
+  assert.equal(netWorth(g.s, a), projA);
+  assert.ok(before < projA);
+  assert.equal(currentRound(g.s).worths[a], netWorth(g.s, a));
+  assert.equal(worthHistory(g.s)[a].length, 1);
+  g.send('nextRound');
+  r = currentRound(g.s);
+  for (const pid of activePlayers(g.s)) g.as(pid, 'buy', { stockId: r.stockByPlayer[pid], pct: 10 });
+  g.send('lockRound');
+  for (const grp of currentRound(g.s).groups) g.send('setPlaces', { groupId: grp.id, order: grp.playerIds });
+  g.send('continueFromResults');
+  g.send('finishTournament');
+  const best = bestStocks(g.s);
+  const aw = awards(g.s);
+  assert.ok(aw.length >= 3);
+  assert.ok(aw.every((x) => x.title && x.who && x.detail));
+  assert.ok(best.length > 0);
+  assert.ok(best[0].gain >= best[best.length - 1].gain);
+  assert.ok(costB > 0);
+});
+
+test('moneyline odds', async () => {
+  const { fmtMoneyline } = await import('../src/engine/index.js');
+  assert.equal(fmtMoneyline(0.5), '+100');
+  assert.equal(fmtMoneyline(0.6), '-150');
+  assert.equal(fmtMoneyline(0.25), '+300');
+  assert.equal(fmtMoneyline(0.8), '-400');
+  assert.ok(fmtMoneyline(0.52).startsWith('-'));
 });
