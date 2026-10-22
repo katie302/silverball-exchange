@@ -13,8 +13,9 @@ import {
 const splitLines = (t) => t.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean);
 
 function useOrg() {
-  const { dispatch } = useGame();
-  const user = useAuthUser();
+  const { dispatch, practice } = useGame();
+  const authUser = useAuthUser();
+  const user = practice ? { email: 'practice' } : authUser;
   return { user, send: (type, extra = {}) => dispatch({ type, actor: user?.email, ...extra }) };
 }
 
@@ -712,7 +713,7 @@ function FixTab({ send }) {
 
 // ---------- shell ----------
 export default function OrganizerApp() {
-  const { state, ready, dispatch } = useGame();
+  const { state, ready, dispatch, practice } = useGame();
   const { user, send } = useOrg();
   const [tab, setTab] = useState('Round');
 
@@ -746,7 +747,11 @@ export default function OrganizerApp() {
     <div className="mx-auto max-w-2xl px-4 pb-16 pt-5">
       <div className="mb-3 flex items-center justify-between">
         <div className="font-display text-lg font-extrabold">Silverball <span className="text-pink">Organizer</span></div>
-        {!isLocal && <button className="text-xs text-dim" onClick={signOutUser}>{user.email} · sign out</button>}
+        <div className="flex items-center gap-3 text-xs text-dim">
+          {!practice && <a href="#/practice" className="rounded-lg border border-line px-2 py-1 font-semibold text-pink">Practice mode</a>}
+          {practice && <a href="#/organizer" className="rounded-lg border border-line px-2 py-1 font-semibold text-pink">Back to real game</a>}
+          {!isLocal && !practice && <button onClick={signOutUser}>{user.email} · sign out</button>}
+        </div>
       </div>
       <div className="mb-4 flex gap-1 overflow-x-auto">
         {tabs.map((t) => (

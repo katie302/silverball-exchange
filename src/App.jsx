@@ -2,16 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { GameProvider, useGame } from './game.jsx';
 import PlayerApp from './player.jsx';
 import OrganizerApp from './organizer.jsx';
+import PracticeApp from './practice.jsx';
 import { isLocal } from './firebase.js';
 
-function Router() {
-  const [hash, setHash] = useState(window.location.hash);
+function Router({ hash }) {
   const { error } = useGame();
-  useEffect(() => {
-    const on = () => setHash(window.location.hash);
-    window.addEventListener('hashchange', on);
-    return () => window.removeEventListener('hashchange', on);
-  }, []);
   return (
     <>
       {isLocal && (
@@ -26,9 +21,17 @@ function Router() {
 }
 
 export default function App() {
+  const [hash, setHash] = useState(window.location.hash);
+  useEffect(() => {
+    const on = () => setHash(window.location.hash);
+    window.addEventListener('hashchange', on);
+    return () => window.removeEventListener('hashchange', on);
+  }, []);
+  // Practice mode has its own provider (separate storage), so it never touches the real game.
+  if (hash.startsWith('#/practice')) return <PracticeApp />;
   return (
     <GameProvider>
-      <Router />
+      <Router hash={hash} />
     </GameProvider>
   );
 }

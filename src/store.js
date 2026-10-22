@@ -2,8 +2,8 @@ import { doc, getDoc, onSnapshot, runTransaction } from 'firebase/firestore';
 import { db, isLocal } from './firebase.js';
 import { initialState, reduce } from './engine/index.js';
 
-const KEY = 'silverball-v2';
-const PKEY = 'silverball-profiles-v1';
+const REAL_KEY = 'silverball-v2';
+const REAL_PKEY = 'silverball-profiles-v1';
 
 // localStorage can be missing or blocked (private windows, previews): fall back to memory.
 const mem = {};
@@ -28,7 +28,10 @@ const store = {
 
 // One game document. Every change goes through the engine's reducer inside a
 // Firestore transaction, so two phones trading at once can't corrupt each other.
-export function createStore() {
+// `practice` runs the same engine against its own localStorage copy and never touches Firestore.
+export function createStore({ practice = false } = {}) {
+  const KEY = practice ? 'silverball-practice' : REAL_KEY;
+  const PKEY = practice ? 'silverball-practice-profiles' : REAL_PKEY;
   let snap = { state: initialState(), ready: false, error: null };
   const listeners = new Set();
   const set = (patch) => {
@@ -36,7 +39,7 @@ export function createStore() {
     listeners.forEach((l) => l(snap));
   };
 
-  if (isLocal) {
+  if (isLocal || practice) {
     const load = () => {
       try {
         const raw = store.get(KEY);
@@ -62,7 +65,7 @@ export function createStore() {
         },
       },
       dispatch: async (action) => {
-        // '__wipe' only exists in single-device local mode (used by the trial page).
+        // '__wipe' only exists in local and practice mode.
         const next = action.type === '__wipe' ? initialState() : reduce(load(), action);
         store.set(KEY, JSON.stringify(next));
         set({ state: next });

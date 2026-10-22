@@ -3,9 +3,9 @@ import { createStore } from './store.js';
 
 const Ctx = createContext(null);
 
-export function GameProvider({ children }) {
+export function GameProvider({ children, practice = false }) {
   const ref = useRef(null);
-  if (!ref.current) ref.current = createStore();
+  if (!ref.current) ref.current = createStore({ practice });
   const [snap, setSnap] = useState(ref.current.get());
   const [toast, setToast] = useState(null);
   useEffect(() => ref.current.subscribe(setSnap), []);
@@ -26,7 +26,7 @@ export function GameProvider({ children }) {
     }
   }, []);
 
-  const value = { state: snap.state, ready: snap.ready, error: snap.error, dispatch, setToast, profiles: ref.current.profiles };
+  const value = { state: snap.state, ready: snap.ready, error: snap.error, dispatch, setToast, profiles: ref.current.profiles, practice };
   return (
     <Ctx.Provider value={value}>
       {children}

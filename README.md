@@ -52,6 +52,9 @@ Roster + Machines > Round (Start) > self-buy window > Open market > Lock round >
 - **End screen**: winner, your finish ("#8 of 8 players"), most profitable stock, best stocks overall, awards, standings. The chart and awards need per-round history, so they only fill in for tournaments started on this version.
 - Matches tab removed; the IFPA number box lives in Portfolio until round 1 is paid.
 
+## Practice mode
+On the organizer screen, tap **Practice mode** (or open `/#/practice`). It runs a sandbox tournament with eight made-up players (PIN 1234) stored separately in the browser (`silverball-practice`), so it never touches the real Firestore game. Buttons: new practice (stocks or horse), View as any player, other players buy/bet, lock + random results.
+
 ## Optional: IFPA rating lookup
 `api/ratings.js` is a Vercel function. Add an environment variable `MATCHPLAY_TOKEN` in Vercel and redeploy to enable
 "Look up IFPA ratings" on the Roster tab. Without it, type ratings in by hand.
